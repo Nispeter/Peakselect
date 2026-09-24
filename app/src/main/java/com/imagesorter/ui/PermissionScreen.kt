@@ -1,6 +1,7 @@
 package com.imagesorter.ui
 
 import android.Manifest
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -20,6 +21,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,9 +68,15 @@ object Permissions {
         add(Manifest.permission.ACCESS_MEDIA_LOCATION)
     }.toTypedArray()
 
+    /** Abre "Gestión de multimedia"; si el teléfono no tiene esa pantalla, los ajustes de la app. */
     @RequiresApi(31)
-    fun manageMediaSettings(context: Context) =
-        Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.parse("package:${context.packageName}"))
+    fun openManageMedia(context: Context) {
+        try {
+            context.startActivity(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.parse("package:${context.packageName}")))
+        } catch (_: ActivityNotFoundException) {
+            context.startActivity(appSettings(context))
+        }
+    }
 
     fun appSettings(context: Context) =
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
@@ -95,5 +103,6 @@ fun PermissionScreen(status: Permissions.Status, onResult: () -> Unit) {
         OutlinedButton(onClick = { context.startActivity(Permissions.appSettings(context)) }) {
             Text("Abrir ajustes de la app")
         }
+        TextButton(onClick = { openUrl(context, PRIVACY_URL) }) { Text("Política de privacidad") }
     }
 }

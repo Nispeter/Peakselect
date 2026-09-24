@@ -19,12 +19,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -81,8 +84,10 @@ fun FolderPickerScreen(
     dao: DecisionDao,
     archiveDao: ArchiveDao,
     access: Permissions.Status,
+    settings: AppSettings,
     onOpenDeck: (Screen.Deck) -> Unit,
     onOpenTrash: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -97,9 +102,8 @@ fun FolderPickerScreen(
     var selected by remember { mutableStateOf(emptySet<FolderKey>()) }
     var showArchived by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
-    var confirmReset by remember { mutableStateOf(false) }
 
-    LaunchedEffect(reload) { entries = withContext(Dispatchers.IO) { queries.folderEntries() } }
+    LaunchedEffect(reload, settings.kinds) { entries = withContext(Dispatchers.IO) { queries.folderEntries(settings.kinds) } }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { reload++ }
 
     // Fotos o videos que llegan con la app abierta (p. ej. una captura): la lista se actualiza sola.
@@ -139,7 +143,10 @@ fun FolderPickerScreen(
         topBar = {
             TopAppBar(
                 title = { Text("¿Qué quieres revisar?") },
-                actions = { if (MediaOps.hasSystemTrash) TextButton(onClick = onOpenTrash) { Text("Papelera") } },
+                actions = {
+                    if (MediaOps.hasSystemTrash) TextButton(onClick = onOpenTrash) { Text("Papelera") }
+                    IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = "Ajustes") }
+                },
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -172,7 +179,7 @@ fun FolderPickerScreen(
                                 "Consejo: activa \"Gestión de multimedia\" para que Android no pida confirmación " +
                                     "en cada lote. Aun así, nada se aplica hasta que pulses Confirmar.",
                             )
-                            OutlinedButton(onClick = { context.startActivity(Permissions.manageMediaSettings(context)) }) {
+                            OutlinedButton(onClick = { Permissions.openManageMedia(context) }) {
                                 Text("Activar")
                             }
                         }
@@ -242,23 +249,7 @@ fun FolderPickerScreen(
                     }
                 }
             }
-            item { TextButton(onClick = { confirmReset = true }) { Text("Reiniciar revisadas") } }
         }
-    }
-
-    if (confirmReset) {
-        AlertDialog(
-            onDismissRequest = { confirmReset = false },
-            title = { Text("¿Reiniciar revisadas?") },
-            text = { Text("Las fotos y videos que ya revisaste y aplicaste volverán a aparecer en los mazos. No se modifica ningún archivo.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmReset = false
-                    scope.launch { dao.resetReviewed() }
-                }) { Text("Reiniciar") }
-            },
-            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancelar") } },
-        )
     }
 }
 

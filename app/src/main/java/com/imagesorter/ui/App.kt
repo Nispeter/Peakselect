@@ -17,10 +17,20 @@ sealed interface Screen {
     data object Folders : Screen
     data class Deck(val bucketIds: Set<String>?, val title: String) : Screen
     data object Trash : Screen
+
+    /** Al volver se regresa a [back] (la pantalla principal o el mazo que se estaba revisando). */
+    data class Settings(val back: Screen) : Screen
 }
 
 @Composable
-fun App(queries: MediaQueries, ops: MediaOps, dao: DecisionDao, archiveDao: ArchiveDao) {
+fun App(
+    queries: MediaQueries,
+    ops: MediaOps,
+    dao: DecisionDao,
+    archiveDao: ArchiveDao,
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit,
+) {
     val context = LocalContext.current
     var access by remember { mutableStateOf(Permissions.status(context)) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { access = Permissions.status(context) }
@@ -38,10 +48,18 @@ fun App(queries: MediaQueries, ops: MediaOps, dao: DecisionDao, archiveDao: Arch
             dao = dao,
             archiveDao = archiveDao,
             access = access,
+            settings = settings,
             onOpenDeck = { screen = it },
             onOpenTrash = { screen = Screen.Trash },
+            onOpenSettings = { screen = Screen.Settings(back = s) },
         )
-        is Screen.Deck -> DeckScreen(s, queries, ops, dao, archiveDao, onBack = { screen = Screen.Folders })
+        is Screen.Deck -> DeckScreen(
+            s, queries, ops, dao, archiveDao,
+            settings = settings,
+            onOpenSettings = { screen = Screen.Settings(back = s) },
+            onBack = { screen = Screen.Folders },
+        )
         Screen.Trash -> TrashScreen(queries, ops, onBack = { screen = Screen.Folders })
+        is Screen.Settings -> SettingsScreen(settings, onSettingsChange, dao, access, onBack = { screen = s.back })
     }
 }

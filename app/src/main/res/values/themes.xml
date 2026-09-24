@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Solo la ventana antes de que Compose dibuje; los colores de la app los pone MaterialTheme. -->
+    <style name="Theme.Peakselect" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>

@@ -13,12 +13,14 @@ import androidx.core.content.IntentCompat
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -35,13 +37,16 @@ import androidx.test.rule.GrantPermissionRule
 import com.imagesorter.data.MediaOps
 import com.imagesorter.data.MediaQueries
 import com.imagesorter.data.db.AppDatabase
+import com.imagesorter.data.db.Decision
 import com.imagesorter.domain.Action
 import com.imagesorter.domain.FolderIndex
 import com.imagesorter.domain.MediaKey
 import com.imagesorter.domain.MediaKind
+import com.imagesorter.ui.AppSettings
 import com.imagesorter.ui.CONFIRM_MIN_VISIBLE_MS
 import com.imagesorter.ui.MainActivity
-import com.imagesorter.ui.SwipeSettings
+import com.imagesorter.ui.SettingsStore
+import com.imagesorter.ui.ThemeMode
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -73,7 +78,7 @@ class DeckUiTest {
     fun setUp() {
         assumeTrue("Solo en emulador", fx.isEmulator())
         active = true
-        SwipeSettings.save(fx.context, SwipeSettings.DEFAULT)
+        SettingsStore.save(fx.context, AppSettings())
         fx.setManageMedia(true)
         db.clearAllTables()
     }
@@ -86,7 +91,7 @@ class DeckUiTest {
             db.clearAllTables()
             fx.cleanup()
         } finally {
-            SwipeSettings.save(fx.context, SwipeSettings.DEFAULT)
+            SettingsStore.save(fx.context, AppSettings())
             fx.setManageMedia(false)
         }
     }
@@ -446,7 +451,7 @@ class DeckUiTest {
         val folder = "${fx.runId}_Z"
         repeat(2) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
         val order = deckOrder(folder)
-        SwipeSettings.save(fx.context, SwipeSettings.MAX) // 50 %
+        SettingsStore.save(fx.context, AppSettings(swipeThreshold = AppSettings.SWIPE_MAX)) // 50 %
         openFolder(folder)
         waitPastDoubleTapTimeout()
 
@@ -467,12 +472,194 @@ class DeckUiTest {
         compose.onNodeWithContentDescription("Ajustes").performClick()
         compose.onNodeWithTag("swipe-slider").performSemanticsAction(SemanticsActions.SetProgress) { it(0.2f) }
         compose.onNodeWithText("Cuánto hay que deslizar la foto para decidir: 20% del ancho.").assertIsDisplayed()
-        compose.onNodeWithText("Listo").performClick()
-        assertEquals("se guarda", 0.2f, SwipeSettings.load(fx.context), 0.001f)
+        compose.onNodeWithContentDescription("Volver").performClick()
+        assertEquals("se guarda", 0.2f, SettingsStore.load(fx.context).swipeThreshold, 0.001f)
 
+        // Vuelve al mismo mazo, que sigue en la misma foto.
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("card").fetchSemanticsNodes().isNotEmpty() }
         waitPastDoubleTapTimeout()
         compose.onNodeWithTag("card").performTouchInput { swipeLeft(startX = centerX, endX = centerX - width * 0.35f) }
         compose.waitUntil(5_000) { staged().size == 1 }
         assertEquals(Action.TRASH to order[0], lastStaged())
+    }
+
+    // ---------- Ajustes ----------
+
+    private fun openSettings() {
+        compose.onAllNodesWithContentDescription("Ajustes").onFirst().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("settings-list").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun settingsRow(text: String) = compose.onNodeWithTag("settings-list").performScrollToNode(hasText(text, substring = true))
+
+    @Test
+    fun settingsPage_opensFromHome_showsEverySection_andGoesBack() {
+        launch()
+        openSettings()
+        listOf(
+            "Gestos", "Distancia para deslizar", "Invertir lados", "Decidir tocando la foto", "Vibrar al decidir",
+            "Orden y contenido", "Más antiguas primero", "Incluir videos", "Apariencia", "Oscuro",
+            "Mantenimiento", "Reiniciar revisadas", "Acerca de", "Versión ", "Política de privacidad", "Código fuente",
+        ).forEach { settingsRow(it) }
+        compose.onNodeWithContentDescription("Volver").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("Todas (", substring = true).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun everySetting_isSavedAndSurvivesARestart() {
+        launch()
+        openSettings()
+        settingsRow("Invertir lados")
+        compose.onNodeWithText("Invertir lados").performClick()
+        compose.onNodeWithText("Decidir tocando la foto").performClick()
+        compose.onNodeWithText("Vibrar al decidir").performClick()
+        settingsRow("Más antiguas primero")
+        compose.onNodeWithText("Más antiguas primero").performClick()
+        settingsRow("Incluir videos")
+        compose.onNodeWithText("Incluir videos").performClick()
+        settingsRow("Oscuro")
+        compose.onNodeWithText("Oscuro").performClick()
+        compose.waitForIdle()
+
+        val expected = AppSettings(
+            swapSides = true, tapToDecide = false, vibrate = false, oldestFirst = true, includeVideos = false, theme = ThemeMode.DARK,
+        )
+        assertEquals(expected, SettingsStore.load(fx.context))
+        scenario?.close()
+        launch()
+        openSettings()
+        compose.onNodeWithText("Izquierda = conservar, derecha = borrar").assertIsDisplayed()
+        assertEquals("tras reiniciar la app", expected, SettingsStore.load(fx.context))
+    }
+
+    @Test
+    fun swappedSides_tapsAndSwipesDecideTheOppositeWay() {
+        SettingsStore.save(fx.context, AppSettings(swapSides = true))
+        val folder = "${fx.runId}_S"
+        repeat(3) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
+        val order = deckOrder(folder)
+        openFolder(folder)
+
+        compose.onNode(hasTestTag("tap-left") and hasText("Conservar", substring = true), useUnmergedTree = false).assertExists()
+        waitPastDoubleTapTimeout()
+        compose.onNodeWithTag("tap-left").performClick()
+        compose.waitUntil(5_000) { staged().size == 1 }
+        assertEquals("izquierda conserva", Action.KEEP to order[0], lastStaged())
+
+        waitPastDoubleTapTimeout()
+        compose.onNodeWithTag("tap-right").performClick()
+        compose.waitUntil(5_000) { staged().size == 2 }
+        assertEquals("derecha borra", Action.TRASH to order[1], lastStaged())
+
+        waitPastDoubleTapTimeout()
+        compose.onNodeWithTag("card").performTouchInput {
+            down(center)
+            moveBy(Offset(-width * 0.3f, 0f))
+        }
+        compose.onNodeWithText("CONSERVAR").assertIsDisplayed()
+        compose.onNodeWithTag("card").performTouchInput { up() }
+        compose.waitUntil(5_000) { staged().size == 3 }
+        assertEquals("deslizar a la izquierda conserva", Action.KEEP to order[2], lastStaged())
+    }
+
+    @Test
+    fun withTapToDecideOff_tapsDoNothing_butSwipingStillDecides() {
+        SettingsStore.save(fx.context, AppSettings(tapToDecide = false))
+        val folder = "${fx.runId}_U"
+        repeat(2) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
+        val order = deckOrder(folder)
+        openFolder(folder)
+
+        waitPastDoubleTapTimeout()
+        compose.onNodeWithTag("tap-left").performClick()
+        compose.onNodeWithTag("tap-right").performClick()
+        compose.waitForIdle()
+        Thread.sleep(500)
+        assertTrue("tocar no decide", staged().isEmpty())
+
+        compose.onNodeWithTag("card").performTouchInput { swipeLeft() }
+        compose.waitUntil(5_000) { staged().size == 1 }
+        assertEquals(Action.TRASH to order[0], lastStaged())
+    }
+
+    @Test
+    fun oldestFirst_showsTheOldestPhotoFirst() {
+        SettingsStore.save(fx.context, AppSettings(oldestFirst = true))
+        val folder = "${fx.runId}_O"
+        repeat(3) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
+        val newestFirst = deckOrder(folder)
+        openFolder(folder)
+
+        waitPastDoubleTapTimeout()
+        compose.onNodeWithTag("tap-right").performClick()
+        compose.waitUntil(5_000) { staged().size == 1 }
+        assertEquals("la más antigua primero", Action.KEEP to newestFirst.last(), lastStaged())
+    }
+
+    @Test
+    fun withoutVideos_foldersAndDecksShowOnlyPhotos_andTurningThemBackOnRestoresThem() {
+        SettingsStore.save(fx.context, AppSettings(includeVideos = false))
+        val folder = "${fx.runId}_V"
+        repeat(2) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
+        fx.seed("Pictures/$folder/", "${fx.runId}_v.mp4", variant = 9)
+
+        launch()
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(folder))
+        compose.onNode(hasText(folder) and hasText("2")).assertExists()
+
+        openSettings()
+        settingsRow("Incluir videos")
+        compose.onNodeWithText("Incluir videos").performClick()
+        compose.onNodeWithContentDescription("Volver").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Todas (", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText(folder))
+        compose.onNode(hasText(folder) and hasText("3")).assertExists()
+    }
+
+    @Test
+    fun resetReviewed_fromSettings_asksFirst_andBringsReviewedPhotosBack() {
+        val s = fx.seed("Pictures/${fx.runId}_R/", "${fx.runId}_0.jpg", variant = 0)
+        val item = MediaQueries(fx.context.contentResolver).snapshot(listOf(s.key)).getValue(s.key)
+        runBlocking {
+            db.decisions().insert(Decision.staged(item, Action.KEEP, seq = 1))
+            db.decisions().markDone(s.key.volume, s.key.mediaId)
+        }
+        launch()
+        openSettings()
+        settingsRow("Reiniciar revisadas")
+        compose.onNodeWithText("Reiniciar revisadas").performClick()
+        compose.onNodeWithText("Cancelar").performClick()
+        assertEquals("cancelar no reinicia", listOf(s.key), runBlocking { db.decisions().decidedKeys() })
+
+        compose.onNodeWithText("Reiniciar revisadas").performClick()
+        compose.onNodeWithText("Reiniciar").performClick()
+        compose.waitUntil(5_000) { runBlocking { db.decisions().decidedKeys() }.isEmpty() }
+        assertEquals("no toca el archivo", s.sha256, fx.sha256(s.path))
+    }
+
+    /** Ejecuta la acción accesible [label] de la tarjeta, como lo haría TalkBack. */
+    private fun customAction(label: String) {
+        val actions = compose.onNodeWithTag("card").fetchSemanticsNode().config[SemanticsActions.CustomActions]
+        compose.runOnUiThread { actions.single { it.label == label }.action() }
+    }
+
+    /** TalkBack no puede deslizar: con tocar apagado y lados invertidos, las acciones accesibles deciden por su nombre. */
+    @Test
+    fun accessibilityActions_decideByName_evenWithTapOffAndSidesSwapped() {
+        SettingsStore.save(fx.context, AppSettings(tapToDecide = false, swapSides = true))
+        val folder = "${fx.runId}_A11Y"
+        repeat(2) { fx.seed("Pictures/$folder/", "${fx.runId}_$it.jpg", variant = it) }
+        val order = deckOrder(folder)
+        openFolder(folder)
+
+        waitPastDoubleTapTimeout()
+        customAction("Borrar")
+        compose.waitUntil(5_000) { staged().size == 1 }
+        assertEquals(Action.TRASH to order[0], lastStaged())
+
+        waitPastDoubleTapTimeout()
+        customAction("Conservar")
+        compose.waitUntil(5_000) { staged().size == 2 }
+        assertEquals(Action.KEEP to order[1], lastStaged())
     }
 }

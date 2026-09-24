@@ -21,10 +21,10 @@ import com.imagesorter.domain.MediaKind
 class MediaQueries(private val resolver: ContentResolver) {
 
     /** Un registro por foto o video (sin Favoritos/Liked) para armar el selector de carpetas. */
-    fun folderEntries(): List<FolderEntry> {
+    fun folderEntries(kinds: Collection<MediaKind> = MediaKind.entries): List<FolderEntry> {
         val sel = SelectionBuilder.forDeck(null)
         val out = ArrayList<FolderEntry>()
-        for (kind in MediaKind.entries) {
+        for (kind in kinds) {
             resolver.query(collection(kind, MediaStore.VOLUME_EXTERNAL), FOLDER_PROJECTION, sel.clause, sel.args.toTypedArray(), null)
                 ?.use { c ->
                     while (c.moveToNext()) {
@@ -42,15 +42,23 @@ class MediaQueries(private val resolver: ContentResolver) {
         return out
     }
 
-    /** Fotos y videos del mazo, más recientes primero. MediaStore excluye por defecto papelera y pendientes. */
-    fun deck(bucketIds: Collection<String>?): List<MediaItem> {
+    /**
+     * Fotos y videos del mazo, más recientes primero (o más antiguas con [oldestFirst]). MediaStore excluye por
+     * defecto papelera y pendientes.
+     */
+    fun deck(
+        bucketIds: Collection<String>?,
+        kinds: Collection<MediaKind> = MediaKind.entries,
+        oldestFirst: Boolean = false,
+    ): List<MediaItem> {
         val sel = SelectionBuilder.forDeck(bucketIds)
-        return MediaKind.entries.flatMap { kind ->
+        val newestFirst = compareByDescending<MediaItem> { it.sortTime }.thenByDescending { it.id }
+        return kinds.flatMap { kind ->
             queryItems(collection(kind, MediaStore.VOLUME_EXTERNAL), kind, Bundle().apply {
                 putString(ContentResolver.QUERY_ARG_SQL_SELECTION, sel.clause)
                 putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, sel.args.toTypedArray())
             })
-        }.sortedWith(compareByDescending<MediaItem> { it.sortTime }.thenByDescending { it.id })
+        }.sortedWith(if (oldestFirst) newestFirst.reversed() else newestFirst)
     }
 
     /** Toda la papelera de fotos y videos del sistema (de cualquier app); primero lo que vence antes. */

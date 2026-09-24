@@ -44,6 +44,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -56,23 +60,26 @@ import kotlin.math.abs
 
 /**
  * Foto o video al frente del mazo. Tocar la mitad izquierda o deslizar a la izquierda = borrar; la mitad
- * derecha o deslizar a la derecha = conservar. Un deslizamiento corto vuelve a su lugar sin decidir.
- * Los videos se reproducen solos aquí mismo; el botón central los pausa o reanuda.
+ * derecha o deslizar a la derecha = conservar ([swapSides] los invierte). Un deslizamiento corto vuelve a su
+ * lugar sin decidir. Los videos se reproducen solos aquí mismo; el botón central los pausa o reanuda.
  * @param swipeThreshold cuánto hay que deslizar para decidir, como fracción del ancho.
+ * @param tapToDecide si tocar una mitad decide; si no, solo deslizar. Las etiquetas siguen mostrando cada lado.
  */
 @Composable
 fun MediaCard(
     item: MediaItem,
-    onTapLeft: () -> Unit,
-    onTapRight: () -> Unit,
+    onTrash: () -> Unit,
+    onKeep: () -> Unit,
     modifier: Modifier = Modifier,
-    swipeThreshold: Float = SwipeSettings.DEFAULT,
+    swipeThreshold: Float = AppSettings.SWIPE_DEFAULT,
+    swapSides: Boolean = false,
+    tapToDecide: Boolean = true,
 ) {
     // Los videos se reproducen solos al aparecer; el botón los pausa.
     var playing by remember(item.key) { mutableStateOf(item.kind == MediaKind.VIDEO) }
 
-    val onLeft by rememberUpdatedState(onTapLeft)
-    val onRight by rememberUpdatedState(onTapRight)
+    val onLeft by rememberUpdatedState(if (swapSides) onKeep else onTrash)
+    val onRight by rememberUpdatedState(if (swapSides) onTrash else onKeep)
     val offsetX = remember(item.key) { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var cardWidth by remember { mutableFloatStateOf(1f) }
@@ -103,6 +110,13 @@ fun MediaCard(
                     change.consume()
                     scope.launch { offsetX.snapTo(offsetX.value + dragAmount) }
                 }
+            }
+            // TalkBack no puede deslizar: estas acciones deciden igual que el gesto, esté o no activado tocar.
+            .semantics {
+                customActions = listOf(
+                    CustomAccessibilityAction("Borrar") { onTrash(); true },
+                    CustomAccessibilityAction("Conservar") { onKeep(); true },
+                )
             }
             .testTag("card")
             .clip(RoundedCornerShape(16.dp))
@@ -137,14 +151,16 @@ fun MediaCard(
 
         // Zonas de toque encima de la imagen o el video.
         Row(Modifier.fillMaxSize()) {
-            TapZone(Icons.Filled.Delete, "Borrar", Alignment.BottomStart, Modifier.weight(1f).testTag("tap-left"), onTapLeft)
-            TapZone(Icons.Filled.Check, "Conservar", Alignment.BottomEnd, Modifier.weight(1f).testTag("tap-right"), onTapRight)
+            val trash = SideLabel(Icons.Filled.Delete, "Borrar")
+            val keep = SideLabel(Icons.Filled.Check, "Conservar")
+            TapZone(if (swapSides) keep else trash, Alignment.BottomStart, Modifier.weight(1f).testTag("tap-left"), tapToDecide) { onLeft() }
+            TapZone(if (swapSides) trash else keep, Alignment.BottomEnd, Modifier.weight(1f).testTag("tap-right"), tapToDecide) { onRight() }
         }
 
         // Mientras se desliza: color y texto de lo que pasará al soltar. Llega a su máximo justo donde soltar decide.
         val progress = (offsetX.value / (cardWidth * swipeThreshold)).coerceIn(-1f, 1f)
         if (progress != 0f) {
-            val deleting = progress < 0f
+            val deleting = (progress < 0f) != swapSides
             val strength = abs(progress)
             Box(
                 Modifier
@@ -167,7 +183,11 @@ fun MediaCard(
                 shape = CircleShape,
                 color = Color.Black.copy(alpha = 0.55f),
                 contentColor = Color.White,
-                modifier = Modifier.align(Alignment.Center).size(64.dp).testTag("play"),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(64.dp)
+                    .semantics { contentDescription = if (playing) "Pausar" else "Reproducir" }
+                    .testTag("play"),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     if (playing) {
@@ -177,7 +197,7 @@ fun MediaCard(
                             }
                         }
                     } else {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "Reproducir", modifier = Modifier.size(32.dp))
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(32.dp))
                     }
                 }
             }
@@ -196,9 +216,11 @@ fun MediaCard(
     }
 }
 
+private data class SideLabel(val icon: ImageVector, val text: String)
+
 @Composable
-private fun TapZone(icon: ImageVector, label: String, align: Alignment, modifier: Modifier, onTap: () -> Unit) {
-    Box(modifier.fillMaxHeight().clickable(onClick = onTap)) {
+private fun TapZone(label: SideLabel, align: Alignment, modifier: Modifier, enabled: Boolean, onTap: () -> Unit) {
+    Box(modifier.fillMaxHeight().then(if (enabled) Modifier.clickable(onClick = onTap) else Modifier)) {
         Row(
             Modifier
                 .align(align)
@@ -208,8 +230,8 @@ private fun TapZone(icon: ImageVector, label: String, align: Alignment, modifier
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-            Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge)
+            Icon(label.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Text(label.text, color = Color.White, style = MaterialTheme.typography.labelLarge)
         }
     }
 }

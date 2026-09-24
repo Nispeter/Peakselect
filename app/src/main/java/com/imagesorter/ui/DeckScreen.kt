@@ -1,7 +1,9 @@
 package com.imagesorter.ui
 
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import android.provider.MediaStore
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
@@ -24,14 +26,12 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -40,7 +40,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,8 +52,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,7 +76,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +85,8 @@ fun DeckScreen(
     ops: MediaOps,
     dao: DecisionDao,
     archiveDao: ArchiveDao,
+    settings: AppSettings,
+    onOpenSettings: () -> Unit,
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
@@ -102,10 +102,10 @@ fun DeckScreen(
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(deck, reload) {
+    LaunchedEffect(deck, reload, settings.kinds, settings.oldestFirst) {
         loading = true
         val archives = archiveDao.observeAll().first()
-        val items = withContext(Dispatchers.IO) { queries.deck(deck.bucketIds) }
+        val items = withContext(Dispatchers.IO) { queries.deck(deck.bucketIds, settings.kinds, settings.oldestFirst) }
         // Lo de carpetas archivadas no vuelve a aparecer, salvo lo que llegó después de archivarlas.
         session.load(items.filter { FolderIndex.isVisible(it, archives) })
         loading = false
@@ -148,9 +148,7 @@ fun DeckScreen(
 
     // Lo que se muestra en este frame: los toques actúan SOLO sobre eso, y solo después de que estuvo en
     // pantalla lo que dura un doble toque (así el segundo toque no decide sobre lo siguiente sin verlo).
-    var swipeThreshold by remember { mutableFloatStateOf(SwipeSettings.load(context)) }
-    var showSettings by remember { mutableStateOf(false) }
-
+    val view = LocalView.current
     val shown = cards.firstOrNull()?.takeIf { !loading }
     val shownAt = remember(shown?.key) { SystemClock.uptimeMillis() }
     val minVisibleMs = LocalViewConfiguration.current.doubleTapTimeoutMillis
@@ -159,6 +157,7 @@ fun DeckScreen(
         val item = shown ?: return
         if (SystemClock.uptimeMillis() - shownAt < minVisibleMs) return
         if (action == Action.TRASH || action == Action.KEEP) feedback = TapFeedback(action, SystemClock.uptimeMillis())
+        if (settings.vibrate) view.performHapticFeedback(hapticFor(action))
         decide(action, item.key)
     }
 
@@ -180,7 +179,7 @@ fun DeckScreen(
                 title = { Text(deck.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = { TextButton(onClick = onBack) { Text("←") } },
                 actions = {
-                    IconButton(onClick = { showSettings = true }) { Icon(Icons.Filled.Settings, contentDescription = "Ajustes") }
+                    IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, contentDescription = "Ajustes") }
                     if (!loading) {
                         Text("${cards.size} restantes", Modifier.padding(end = 16.dp), style = MaterialTheme.typography.labelLarge)
                     }
@@ -234,54 +233,30 @@ fun DeckScreen(
                     key(shown.key) {
                         MediaCard(
                             shown,
-                            onTapLeft = { act(Action.TRASH) },
-                            onTapRight = { act(Action.KEEP) },
-                            swipeThreshold = swipeThreshold,
+                            onTrash = { act(Action.TRASH) },
+                            onKeep = { act(Action.KEEP) },
+                            swipeThreshold = settings.swipeThreshold,
+                            swapSides = settings.swapSides,
+                            tapToDecide = settings.tapToDecide,
                         )
                     }
                 }
             }
             // Efecto breve junto a la zona tocada. Va aparte de la tarjeta: la foto pasa al instante igual.
-            feedback?.let { TapPulse(it, Modifier.align(if (it.action == Action.TRASH) Alignment.BottomStart else Alignment.BottomEnd)) }
+            feedback?.let {
+                val onLeft = (it.action == Action.TRASH) != settings.swapSides
+                TapPulse(it, Modifier.align(if (onLeft) Alignment.BottomStart else Alignment.BottomEnd))
+            }
         }
     }
     message?.let { (title, text) -> ErrorDialog(text, title) { message = null } }
-    if (showSettings) {
-        SwipeSettingsDialog(
-            value = swipeThreshold,
-            onChange = {
-                swipeThreshold = it
-                SwipeSettings.save(context, it)
-            },
-            onDismiss = { showSettings = false },
-        )
-    }
 }
 
-@Composable
-private fun SwipeSettingsDialog(value: Float, onChange: (Float) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Deslizar") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Cuánto hay que deslizar la foto para decidir: ${(value * 100).roundToInt()}% del ancho.")
-                Slider(
-                    value = value,
-                    onValueChange = onChange,
-                    valueRange = SwipeSettings.MIN..SwipeSettings.MAX,
-                    steps = 7, // de 5 en 5 %
-                    modifier = Modifier.testTag("swipe-slider"),
-                )
-                Row(Modifier.fillMaxWidth()) {
-                    Text("Menos", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
-                    Text("Más", style = MaterialTheme.typography.labelSmall)
-                }
-                Text("Tocar cada mitad de la foto sigue funcionando igual.", style = MaterialTheme.typography.bodySmall)
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
-    )
+/** Vibración breve al decidir: de rechazo al borrar, de confirmación para el resto. */
+private fun hapticFor(action: Action): Int = when {
+    Build.VERSION.SDK_INT < 30 -> HapticFeedbackConstants.VIRTUAL_KEY
+    action == Action.TRASH -> HapticFeedbackConstants.REJECT
+    else -> HapticFeedbackConstants.CONFIRM
 }
 
 private data class TapFeedback(val action: Action, val at: Long)
