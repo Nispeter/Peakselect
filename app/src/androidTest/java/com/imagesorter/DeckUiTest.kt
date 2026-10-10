@@ -662,4 +662,32 @@ class DeckUiTest {
         compose.waitUntil(5_000) { staged().size == 2 }
         assertEquals(Action.KEEP to order[1], lastStaged())
     }
+
+    @Test
+    fun settings_openThePrivacyPolicy_withoutRecordingAnything() {
+        val folder = "${fx.runId}_P"
+        fx.seed("Pictures/$folder/", "${fx.runId}_0.jpg", variant = 0)
+        var opened: Intent? = null
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val monitor = object : Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
+                if (intent.action != Intent.ACTION_VIEW) return null
+                opened = intent
+                return Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null)
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            openFolder(folder)
+            openSettings()
+            settingsRow("Política de privacidad")
+            compose.onNodeWithText("Política de privacidad").performClick()
+            compose.waitUntil(5_000) { opened != null }
+        } finally {
+            instrumentation.removeMonitor(monitor)
+        }
+
+        assertEquals(Uri.parse("https://github.com/Nispeter/Peakselect/blob/main/PRIVACY.md"), checkNotNull(opened).data)
+        assertTrue("abrir la política no registra decisiones", staged().isEmpty())
+    }
 }
