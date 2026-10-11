@@ -5,3 +5,7 @@ local.properties
 .idea/
 *.iml
 captures/
+
+# Claves de firma: nunca en el repo
+*.jks
+*.keystore

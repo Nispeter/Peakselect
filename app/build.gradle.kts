@@ -3,7 +3,7 @@ import java.security.MessageDigest
 
 // Huella SHA-256 del certificado de la clave de subida a Play. Un paquete de publicación sin firmar o con otra
 // clave no se genera: el build falla (ver checkPublishedKey).
-val publishedCertSha256 = "655FFA802C0B16B3CF208FE118984DC67E448271972EFFBC1C9082D3AF81C372"
+val publishedCertSha256 = "9D35A1A705432E2A2EC45A4F107B4F5FE4B5C6781A43B3909F4502740A4E3D71"
 
 plugins {
     alias(libs.plugins.android.application)
